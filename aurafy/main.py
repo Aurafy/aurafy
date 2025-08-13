@@ -1,41 +1,55 @@
 #!/usr/bin/env python3
+"""
+Aurafy (Spotify + SBERT reranker)
+
+- Candidate gathering: artists-by-genre top tracks, genre playlists, targeted track search.
+- SBERT (sentence-transformers) reranks semantically to the user's prompt.
+- Optional strict-genre filtering (using artist genres).
+- Optional Spotify audio-features (if reachable) to add light tags for reranking.
+
+ENV:
+  SPOTIFY_CLIENT_ID=...
+  SPOTIFY_CLIENT_SECRET=...
+  [optional] SBERT_MODEL_NAME=all-MiniLM-L6-v2
+
+Install:
+  pip install httpx python-dotenv sentence-transformers torch
+"""
+
 import os
 import time
 import base64
 import argparse
 import json
-from typing import Dict, List, Tuple, Optional, Set
-import tempfile
-import re
 import random
+import re
+from typing import Dict, List, Tuple, Optional, Set
 
 import httpx
 from dotenv import load_dotenv
 
-# =========================== Setup & Globals ===========================
-
-_SPOTIFY_ID_RE = re.compile(r"^[A-Za-z0-9]{22}$")
-_artist_genres_cache: dict[str, list[str]] = {}
-
-def _clean_track_ids(ids):
-    """Keep only well-formed 22-char base62 IDs."""
-    return [tid for tid in ids if tid and _SPOTIFY_ID_RE.match(tid)]
-
+# =========================== Config & Globals ===========================
 load_dotenv()
+
 CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 if not CLIENT_ID or not CLIENT_SECRET:
     raise SystemExit("Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env")
 
 DEFAULT_MARKET = "US"
-SEARCH_PAGES = 3
+SEARCH_PAGES = 2
 YEAR_HINT = "2010-2025"
 MAX_CANDIDATES = 400
 AUDIO_FEATURES_BATCH = 80
-AUDIO_FEATURES_AVAILABLE = None  # tri-state: None/True/False
 HTTP_TIMEOUT = 30.0
+AUDIO_FEATURES_AVAILABLE = None  # tri-state: None/True/False
 
-# Local allowlist for genre tokens
+SBERT_MODEL_NAME_ENV_DEFAULT = os.getenv("SBERT_MODEL_NAME", "all-MiniLM-L6-v2")
+
+_SPOTIFY_ID_RE = re.compile(r"^[A-Za-z0-9]{22}$")
+_artist_genres_cache: dict[str, list[str]] = {}
+
+# Local allowlist for recognizable genre tokens
 ALLOWED_GENRES: Set[str] = {
     "acoustic","afrobeat","alt-rock","alternative","ambient","anime","bluegrass","blues",
     "bossa-nova","brazil","breakbeat","british","cabaret","cantopop","chicago-house","children",
@@ -52,29 +66,14 @@ ALLOWED_GENRES: Set[str] = {
     "study","summer","synth-pop","tango","techno","trance","trip-hop","turkish","work-out","world-music"
 }
 
-# Mood presets → audio-feature ranges (used for Spotify features or local proxies)
+# Optional mood presets; we only use these lightly (tags) when audio features are available
 PRESETS: Dict[str, Dict[str, Tuple[float, float]]] = {
     "happy":      {"valence": (0.7, 1.0), "energy": (0.6, 0.95), "danceability": (0.6, 0.95), "tempo": (105, 160)},
-    "sad": {"valence": (0.0, 0.2),"energy": (0.0, 0.4),"acousticness": (0.5, 1.0),   "tempo": (50, 90)},
+    "sad":        {"valence": (0.0, 0.35), "energy": (0.2, 0.6),  "acousticness": (0.4, 1.0),  "tempo": (60, 110)},
     "chill":      {"valence": (0.3, 0.7), "energy": (0.2, 0.5),  "acousticness": (0.3, 0.9),  "tempo": (60, 105)},
     "hype":       {"valence": (0.5, 1.0), "energy": (0.8, 1.0),  "danceability": (0.7, 1.0),  "tempo": (120, 180)},
     "nostalgic":  {"valence": (0.4, 0.75),"energy": (0.3, 0.65), "acousticness": (0.2, 0.8),  "tempo": (70, 120)},
 }
-
-# =========================== Optional local analysis deps ===========================
-_LIBROSA_OK = None
-def _ensure_librosa():
-    global _LIBROSA_OK
-    if _LIBROSA_OK is not None:
-        return _LIBROSA_OK
-    try:
-        import librosa  # noqa
-        import numpy as np  # noqa
-        import soundfile as sf  # noqa
-        _LIBROSA_OK = True
-    except Exception:
-        _LIBROSA_OK = False
-    return _LIBROSA_OK
 
 # =========================== HTTP / Auth ===========================
 _http: Optional[httpx.Client] = None
@@ -87,7 +86,7 @@ def http_client() -> httpx.Client:
             timeout=HTTP_TIMEOUT,
             follow_redirects=False,
             http2=False,
-            headers={"User-Agent": "aurafy/1.0"}
+            headers={"User-Agent": "aurafy/2.1"}
         )
     return _http
 
@@ -96,16 +95,8 @@ def get_app_token() -> str:
     if _token_cache["access_token"] and now < _token_cache["expires_at"] - 60:
         return _token_cache["access_token"]
     basic = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
-    headers = {
-        "Authorization": f"Basic {basic}",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json"
-    }
-    resp = http_client().post(
-        "https://accounts.spotify.com/api/token",
-        data={"grant_type": "client_credentials"},
-        headers=headers
-    )
+    headers = {"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
+    resp = http_client().post("https://accounts.spotify.com/api/token", data={"grant_type": "client_credentials"}, headers=headers)
     resp.raise_for_status()
     data = resp.json()
     _token_cache["access_token"] = data["access_token"]
@@ -116,42 +107,37 @@ def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {get_app_token()}", "Accept": "application/json"}
 
 def _get_json(url: str, params: Optional[dict] = None, *, max_retries: int = 6) -> dict:
-    """
-    Rate-limit aware GET that:
-      - respects Retry-After on 429
-      - retries with exponential backoff + jitter on 5xx
-      - refreshes token once on 401
-    """
     client = http_client()
     backoff = 1.0
     refreshed = False
-    for attempt in range(max_retries):
-        r = client.get(url, params=params, headers=_auth_headers())
-        # 2xx
-        if 200 <= r.status_code < 300:
-            return r.json()
-        # 401 -> refresh token once
-        if r.status_code == 401 and not refreshed:
-            _token_cache["access_token"] = None
-            _token_cache["expires_at"] = 0.0
-            refreshed = True
-            continue
-        # 429 -> honor Retry-After
-        if r.status_code == 429:
-            retry_after = r.headers.get("Retry-After")
-            delay = float(retry_after) if retry_after else backoff
-            time.sleep(delay)
-            backoff = min(backoff * 2, 16) + random.random()
-            continue
-        # 5xx -> retry
-        if 500 <= r.status_code < 600:
+    last_exc = None
+    for _ in range(max_retries):
+        try:
+            r = client.get(url, params=params, headers=_auth_headers())
+            if 200 <= r.status_code < 300:
+                return r.json()
+            if r.status_code == 401 and not refreshed:
+                _token_cache["access_token"] = None
+                _token_cache["expires_at"] = 0.0
+                refreshed = True
+                continue
+            if r.status_code == 429:
+                delay = float(r.headers.get("Retry-After") or backoff)
+                time.sleep(delay)
+                backoff = min(backoff * 2, 16) + random.random()
+                continue
+            if 500 <= r.status_code < 600:
+                time.sleep(backoff + random.random())
+                backoff = min(backoff * 2, 16)
+                continue
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            last_exc = e
             time.sleep(backoff + random.random())
             backoff = min(backoff * 2, 16)
-            continue
-        # Other errors -> raise
-        r.raise_for_status()
-    # If we exhausted retries, raise last response error
-    r.raise_for_status()
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Failed to fetch JSON")
 
 # =========================== Parsing ===========================
 def parse_query(text: str) -> tuple[List[str], List[str]]:
@@ -166,20 +152,10 @@ def parse_query(text: str) -> tuple[List[str], List[str]]:
             genres.append(g)
     return moods, genres
 
-def merge_feature_ranges(moods: List[str]) -> Dict[str, Tuple[float, float]]:
-    if not moods:
-        return {}
-    out: Dict[str, Tuple[float, float]] = {}
-    for m in moods:
-        for k, (a, b) in PRESETS[m].items():
-            if k not in out:
-                out[k] = (a, b)
-            else:
-                aa, bb = out[k]
-                out[k] = (min(aa, a), max(bb, b))
-    return out
-
 # =========================== Candidate Gathering ===========================
+def _clean_track_ids(ids):
+    return [tid for tid in ids if tid and _SPOTIFY_ID_RE.match(tid)]
+
 def search_tracks_by_term(term: str, pages: int = SEARCH_PAGES, market: str = DEFAULT_MARKET) -> List[dict]:
     items: List[dict] = []
     queries = [f'track:"" {term} year:{YEAR_HINT}', f'{term} year:{YEAR_HINT}', term]
@@ -195,85 +171,92 @@ def search_tracks_by_term(term: str, pages: int = SEARCH_PAGES, market: str = DE
                 tid = t.get("id")
                 if tid and tid not in seen_ids:
                     items.append(t); seen_ids.add(tid)
+            time.sleep(0.1)
         if items:
             break
     return items
 
-def spotify_search_artists_by_genre(genre: str, limit: int = 20):
-    # Query Spotify API for artists by genre
-    # Example using spotipy:
-    query = f"genre:{genre}"
-    results = sp.search(q=query, type="artist", limit=limit)
-    return results["artists"]["items"]
+def search_artists_by_genre(genre: str, limit: int = 20) -> List[dict]:
+    queries = [f'genre:"{genre}"', f'genre:{genre}', genre]
+    seen = set(); out: List[dict] = []
+    for q in queries:
+        data = _get_json("https://api.spotify.com/v1/search", {"q": q, "type": "artist", "limit": limit})
+        for a in data.get("artists", {}).get("items", []) or []:
+            aid = a.get("id")
+            if aid and aid not in seen:
+                out.append(a); seen.add(aid)
+        if out:
+            break
+    return out[:limit]
 
-def spotify_get_artist_top_tracks(artist_id: str, country: str = "US"):
-    # Get artist's top tracks
-    return sp.artist_top_tracks(artist_id, country=country)
+def get_artist_top_tracks(artist_id: str, country: str = DEFAULT_MARKET) -> List[dict]:
+    data = _get_json(f"https://api.spotify.com/v1/artists/{artist_id}/top-tracks", {"market": country})
+    return data.get("tracks", []) or []
 
-
-def search_tracks_by_genres(genres: List[str], limit_per_genre=50) -> List[dict]:
-    """
-    Search Spotify artists by genre, then get their top tracks.
-    Return list of track dicts.
-    """
-    all_tracks = []
-    for genre in genres:
-        # Search artists by genre
-        artists = spotify_search_artists_by_genre(genre, limit=20)  # your function to call Spotify search for artists by genre
-        
-        for artist in artists:
-            artist_id = artist["id"]
-            # Get top tracks for artist (country code can be 'US' or your target market)
-            top_tracks_response = spotify_get_artist_top_tracks(artist_id, country="US")
-            top_tracks = top_tracks_response.get("tracks", [])
-            
-            all_tracks.extend(top_tracks)
+def search_tracks_by_genres(genres: List[str], limit_per_genre=160) -> List[dict]:
+    all_tracks: List[dict] = []; seen = set()
+    for genre in genres[:3]:
+        artists = search_artists_by_genre(genre, limit=20)
+        for a in artists:
+            for t in get_artist_top_tracks(a.get("id")):
+                tid = t.get("id")
+                if tid and tid not in seen:
+                    all_tracks.append(t); seen.add(tid)
             if len(all_tracks) >= limit_per_genre:
                 break
         if len(all_tracks) >= limit_per_genre:
             break
     return all_tracks[:limit_per_genre]
 
+def collect_from_playlists(term: str, max_playlists: int = 3, max_tracks_per: int = 150) -> list[dict]:
+    data = _get_json("https://api.spotify.com/v1/search", {"q": term, "type": "playlist", "limit": max_playlists})
+    pl_items = (data.get("playlists") or {}).get("items") or []
+    out: list[dict] = []; seen: set[str] = set()
 
-def expand_via_artists(genres: List[str], limit_artists: int = 10) -> List[dict]:
-    track_items: List[dict] = []
-    seen = set()
-    for g in genres[:3]:
-        data = _get_json("https://api.spotify.com/v1/search", {"q": g, "type": "artist", "limit": limit_artists})
-        artists = data.get("artists", {}).get("items", [])
-        for a in artists:
-            aid = a.get("id")
-            if not aid:
-                continue
-            tops = _get_json(f"https://api.spotify.com/v1/artists/{aid}/top-tracks", {"market": DEFAULT_MARKET}).get("tracks", [])
-            for t in tops:
-                tid = t.get("id")
-                if tid and tid not in seen:
-                    track_items.append(t); seen.add(tid)
-    return track_items
+    def _as_track(obj: dict | None) -> dict | None:
+        if not obj or not isinstance(obj, dict): return None
+        if obj.get("type") != "track": return None
+        if not obj.get("id"): return None
+        return obj
 
-# =========================== Audio Features ===========================
+    for pl in pl_items:
+        if not pl or not isinstance(pl, dict): continue
+        pid = pl.get("id")
+        if not pid: continue
+        pulled = 0; offset = 0
+        while pulled < max_tracks_per:
+            resp = _get_json(f"https://api.spotify.com/v1/playlists/{pid}/tracks",
+                             {"market": DEFAULT_MARKET, "limit": 100, "offset": offset})
+            items = resp.get("items") or []
+            if not items: break
+            for it in items:
+                t = _as_track(it.get("track"))
+                if not t: continue
+                tid = t["id"]
+                if tid not in seen:
+                    out.append(t); seen.add(tid); pulled += 1
+                    if pulled >= max_tracks_per: break
+            if len(items) < 100 or pulled >= max_tracks_per: break
+            offset += 100
+            time.sleep(0.1)
+
+    return out
+
+# =========================== Audio Features (optional) ===========================
 def audio_features_available() -> bool:
     global AUDIO_FEATURES_AVAILABLE
     if AUDIO_FEATURES_AVAILABLE is not None:
         return AUDIO_FEATURES_AVAILABLE
-    tid = "0VjIjW4GlUZAMYd2vXMi3b"
-    r = http_client().get(
-        f"https://api.spotify.com/v1/audio-features/{tid}",
-        headers=_auth_headers()
-    )
+    tid = "0VjIjW4GlUZAMYd2vXMi3b"  # Blinding Lights
+    r = http_client().get(f"https://api.spotify.com/v1/audio-features/{tid}", headers=_auth_headers())
     AUDIO_FEATURES_AVAILABLE = (r.status_code == 200)
     print(f"[debug] audio_features_available={AUDIO_FEATURES_AVAILABLE}")
     return AUDIO_FEATURES_AVAILABLE
 
 def _get_audio_features_batch(ids_chunk: List[str]) -> Dict[str, dict]:
     feats: Dict[str, dict] = {}
-    if not ids_chunk:
-        return feats
-    data = _get_json(
-        "https://api.spotify.com/v1/audio-features",
-        params={"ids": ",".join(ids_chunk)}
-    )
+    if not ids_chunk: return feats
+    data = _get_json("https://api.spotify.com/v1/audio-features", params={"ids": ",".join(ids_chunk)})
     for f in (data.get("audio_features") or []):
         if f and f.get("id"):
             feats[f["id"]] = f
@@ -281,8 +264,7 @@ def _get_audio_features_batch(ids_chunk: List[str]) -> Dict[str, dict]:
 
 def _get_audio_features_single(tid: str) -> Optional[dict]:
     data = _get_json(f"https://api.spotify.com/v1/audio-features/{tid}")
-    if data and data.get("id"):
-        return data
+    if data and data.get("id"): return data
     return None
 
 def get_audio_features(track_ids: List[str]) -> Dict[str, dict]:
@@ -293,116 +275,20 @@ def get_audio_features(track_ids: List[str]) -> Dict[str, dict]:
         chunk = ids[i:i + AUDIO_FEATURES_BATCH]
         got = _get_audio_features_batch(chunk)
         feats.update(got); remaining -= set(got.keys())
-    failed = 0
+        time.sleep(0.05)
     for tid in list(remaining):
         try:
             f = _get_audio_features_single(tid)
         except httpx.HTTPError:
             f = None
-        if f:
-            feats[tid] = f
-        else:
-            failed += 1
-    print(f"[debug] audio_features_ok={len(feats)} fallback_failed={failed}")
+        if f: feats[tid] = f
+    print(f"[debug] with_features={len(feats)}")
     return feats
 
-def matches(features: dict, constraints: dict) -> bool:
-    tol = 1e-6
-    for k, (a, b) in constraints.items():
-        if k == "tempo":
-            v = features.get("tempo")
-            if v is None or v + tol < a or v - tol > b:
-                return False
-        else:
-            v = features.get(k)
-            if v is None:
-                return False
-            aa = max(0.0, a); bb = min(1.0, b)
-            if v + tol < aa or v - tol > bb:
-                return False
-    return True
-
-# =========================== Local Preview Analysis ===========================
-def _download_preview(url: str, path: str) -> bool:
-    try:
-        with httpx.stream("GET", url, timeout=HTTP_TIMEOUT) as r:
-            if r.status_code != 200:
-                return False
-            with open(path, "wb") as f:
-                for chunk in r.iter_bytes():
-                    f.write(chunk)
-        return True
-    except Exception:
-        return False
-
-def analyze_preview_file(path: str) -> Optional[dict]:
-    if not _ensure_librosa():
-        return None
-    import numpy as np
-    import librosa
-    try:
-        y, sr = librosa.load(path, sr=22050, mono=True)
-        if y.size == 0:
-            return None
-        yt, _ = librosa.effects.trim(y, top_db=30)
-        if yt.size < sr * 2:
-            yt = y
-
-        tempo, _ = librosa.beat.beat_track(y=yt, sr=sr)
-        tempo = float(tempo)
-
-        rms = librosa.feature.rms(y=yt).mean()
-        energy = float(np.clip((rms - 0.02) / 0.3, 0.0, 1.0))
-
-        sc = librosa.feature.spectral_centroid(y=yt, sr=sr).mean()
-        sc_norm = float(np.clip((sc - 1500) / 2500, 0.0, 1.0))
-
-        zcr = librosa.feature.zero_crossing_rate(yt).mean()
-
-        onset_env = librosa.onset.onset_strength(y=yt, sr=sr)
-        beat_strength = float(np.clip(np.median(onset_env) / (np.max(onset_env) + 1e-6), 0.0, 1.0))
-        danceability = float(np.clip(beat_strength * (0.5 + 0.5 * (80 <= tempo <= 160)), 0.0, 1.0))
-
-        acousticness = float(np.clip(1.0 - (0.6 * sc_norm + 0.4 * (zcr * 5)), 0.0, 1.0))
-
-        try:
-            chroma = librosa.feature.chroma_cqt(y=yt, sr=sr).mean(axis=1)
-            major_bias = float(np.clip((chroma.max() - chroma.min()) / (chroma.mean() + 1e-6), 0.0, 1.0))
-        except Exception:
-            major_bias = 0.5
-        valence = float(np.clip(0.6 * sc_norm + 0.4 * major_bias, 0.0, 1.0))
-
-        return {"tempo": tempo, "energy": energy, "danceability": danceability,
-                "acousticness": acousticness, "valence": valence}
-    except Exception:
-        return None
-
-def get_local_features_for_candidates(tracks: List[dict], max_analyze: int = 250) -> Dict[str, dict]:
-    feats: Dict[str, dict] = {}
-    count = 0
-    with tempfile.TemporaryDirectory() as td:
-        for t in tracks:
-            if count >= max_analyze:
-                break
-            tid = t.get("id"); url = t.get("preview_url") or t.get("previewUrl")
-            if not tid or not url:
-                continue
-            path = os.path.join(td, f"{tid}.mp3")
-            if not _download_preview(url, path):
-                continue
-            f = analyze_preview_file(path)
-            if f:
-                feats[tid] = f
-                count += 1
-    print(f"[debug] local_features_ok={len(feats)} (from previews)")
-    return feats
-
-# =========================== Heuristic & Genre Helpers ===========================
+# =========================== Genres (strict filtering) ===========================
 def get_artist_genres(aid: str) -> list[str]:
-    if not aid:
-        return []
-    if aid in _artist_genres_cache:
-        return _artist_genres_cache[aid]
+    if not aid: return []
+    if aid in _artist_genres_cache: return _artist_genres_cache[aid]
     try:
         data = _get_json(f"https://api.spotify.com/v1/artists/{aid}")
         gens = data.get("genres") or []
@@ -416,205 +302,145 @@ def artist_matches_any_genre(artist_id: str, targets: list[str]) -> bool:
     tgt = [t.lower() for t in targets]
     return any(any(t in g for t in tgt) for g in gens)
 
-def heuristic_rank_tracks(tracks: list[dict], tokens: list[str], limit: int) -> list[dict]:
-    W_POP = 1.0; W_HAPPY = 6.0; W_POPGEN = 4.0
-    happy_words = {"happy","feel good","feel-good","sun","sunny","summer","smile","bright","dance","party","fun","love","feel"}
-    def score(t: dict) -> float:
-        s = float(t.get("popularity") or 0)
-        name = (t.get("name") or "").lower()
-        if any(w in name for w in happy_words): s += W_HAPPY
-        gens = []
-        for a in (t.get("artists") or []): gens.extend(get_artist_genres(a.get("id")))
-        gl = [g.lower() for g in gens]
-        if any(("pop" in g) or ("dance" in g) or ("electro" in g) for g in gl): s += W_POPGEN
-        return s
-    return sorted(tracks, key=score, reverse=True)[:limit]
+# =========================== SBERT Re-ranker ===========================
+def get_sbert_model(name: str):
+    """
+    Cached loader for sentence-transformers; no global mutation.
+    """
+    # simple singleton per process; could extend to multi-name cache if needed
+    if not hasattr(get_sbert_model, "_cache"):
+        get_sbert_model._cache = {}
+    cache = get_sbert_model._cache
+    if name in cache:
+        return cache[name]
+    try:
+        from sentence_transformers import SentenceTransformer
+        print(f"[debug] Loading SBERT model: {name}")
+        model = SentenceTransformer(name)
+        cache[name] = model
+        return model
+    except Exception as e:
+        print(f"[warn] sentence-transformers not available: {e}")
+        cache[name] = None
+        return None
 
-# =========================== Utils ===========================
-def _relax(constraints: dict, widen_pct: float = 0.2, widen_bpm: float = 20) -> dict:
-    out = {}
-    for k, (a, b) in constraints.items():
-        if k == "tempo": out[k] = (max(0, a - widen_bpm), b + widen_bpm)
-        else: out[k] = (max(0.0, a * (1 - widen_pct)), min(1.0, b * (1 + widen_pct)))
-    return out
+def build_track_text(t: dict, feat: Optional[dict], target_genres: List[str], mood_words: List[str]) -> str:
+    name = t.get("name") or ""
+    artists = ", ".join(a.get("name","") for a in (t.get("artists") or []))
+    agens = []
+    for a in (t.get("artists") or []):
+        agens.extend(get_artist_genres(a.get("id")))
+    agens = list(dict.fromkeys([g.lower() for g in agens]))[:8]
+    tags = []
+    if feat:
+        v = feat.get("valence"); e = feat.get("energy"); d = feat.get("danceability"); ac = feat.get("acousticness"); tp = feat.get("tempo")
+        if v is not None: tags.append(f"valence:{v:.2f}")
+        if e is not None: tags.append(f"energy:{e:.2f}")
+        if d is not None: tags.append(f"danceability:{d:.2f}")
+        if ac is not None: tags.append(f"acousticness:{ac:.2f}")
+        if tp is not None: tags.append(f"tempo:{int(tp)}bpm")
+    return " | ".join(filter(None, [
+        f"{name} — {artists}",
+        ("genres: " + ", ".join(agens)) if agens else "",
+        ("moods: " + ", ".join(mood_words)) if mood_words else "",
+        ("targets: " + ", ".join(target_genres)) if target_genres else "",
+        ("tags: " + ", ".join(tags)) if tags else ""
+    ]))
 
-def _as_track(obj: dict | None) -> dict | None:
-    if not obj or not isinstance(obj, dict): return None
-    if obj.get("type") != "track": return None
-    if not obj.get("id"): return None
-    return obj
+def sbert_rerank(query: str, tracks: List[dict], feat_map: Dict[str, dict], target_genres: List[str], mood_words: List[str], limit: int, model_name: str) -> List[dict]:
+    model = get_sbert_model(model_name)
+    if model is None:
+        # Fallback: popularity sort
+        return sorted(tracks, key=lambda x: (x.get("popularity") or 0), reverse=True)[:limit]
 
-def collect_from_playlists(term: str, max_playlists: int = 3, max_tracks_per: int = 120) -> list[dict]:
-    data = _get_json("https://api.spotify.com/v1/search", {"q": term, "type": "playlist", "limit": max_playlists})
-    pl_items = (data.get("playlists") or {}).get("items") or []
-    out: list[dict] = []; seen: set[str] = set()
-    for pl in pl_items:
-        if not pl or not isinstance(pl, dict): continue
-        pid = pl.get("id")
-        if not pid: continue
-        pulled = 0; offset = 0
-        while pulled < max_tracks_per:
-            resp = _get_json(
-                f"https://api.spotify.com/v1/playlists/{pid}/tracks",
-                {"market": DEFAULT_MARKET, "limit": 100, "offset": offset}
-            )
-            items = resp.get("items") or []
-            if not items: break
-            for it in items:
-                t = _as_track(it.get("track"))
-                if not t: continue
-                tid = t.get("id")
-                if tid not in seen:
-                    out.append(t); seen.add(tid); pulled += 1
-                    if pulled >= max_tracks_per: break
-            if len(items) < 100 or pulled >= max_tracks_per: break
-            offset += 100
-            time.sleep(0.1)  # be gentle on pagination
-    return out
+    # Corpus strings
+    corpus_texts = [build_track_text(t, feat_map.get(t.get("id")), target_genres, mood_words) for t in tracks]
+    try:
+        import numpy as np
+        q_emb = model.encode([query], normalize_embeddings=True)
+        c_emb = model.encode(corpus_texts, normalize_embeddings=True, batch_size=64, convert_to_numpy=True)
+        sims = (c_emb @ q_emb[0])  # cosine since normalized
 
-# =========================== Preview-Aware Augmentation ===========================
-def _combine_terms(moods: List[str], genres: List[str], allow_covers: bool) -> List[str]:
-    base = []
-    if genres: base.extend(genres)
-    if moods: base.extend(moods)
-    combos = set()
-    toks = base[:]
-    for t in toks: combos.add(t)
-    for m in moods:
-        for g in genres:
-            combos.add(f"{m} {g}")
-            combos.add(f"{g} {m}")
-    for g in genres:
-        combos.add(f"{g} playlist"); combos.add(f"{g} hits")
-    if allow_covers:
-        modifiers = ["cover", "covers", "piano", "acoustic", "instrumental", "lofi", "lo-fi"]
-        for g in genres or ["pop"]:
-            for mod in modifiers:
-                combos.add(f"{g} {mod}")
-                if moods:
-                    for m in moods:
-                        combos.add(f"{m} {g} {mod}")
-                        combos.add(f"{g} {mod} {m}")
-    return list(combos)
+        # Small popularity + genre + feature bonuses
+        pop = np.array([float(t.get("popularity") or 0)/100.0 for t in tracks])
+        gbonus = np.array([
+            0.10 if any(artist_matches_any_genre(a.get("id"), target_genres) for a in (t.get("artists") or [])) else 0.0
+            for t in tracks
+        ])
+        fbonus = []
+        for t in tracks:
+            af = feat_map.get(t.get("id")) or {}
+            v = af.get("valence"); e = af.get("energy"); d = af.get("danceability")
+            bonus = 0.0
+            if "happy" in mood_words and v is not None and e is not None and v >= 0.65 and e >= 0.6: bonus += 0.12
+            if "sad" in mood_words and v is not None and v <= 0.3: bonus += 0.12
+            if "chill" in mood_words and e is not None and e <= 0.45: bonus += 0.10
+            if "hype" in mood_words and d is not None and e is not None and d >= 0.7 and e >= 0.75: bonus += 0.12
+            fbonus.append(bonus)
+        fbonus = np.array(fbonus)
 
-def augment_with_preview_tracks(moods: List[str], genres: List[str], allow_covers: bool, target_min: int = 100) -> List[dict]:
-    terms = _combine_terms(moods, genres, allow_covers)
-    out: List[dict] = []
-    seen = set()
-    for term in terms:
-        for t in search_tracks_by_term(term, pages=2, market=DEFAULT_MARKET):
-            if (t.get("preview_url") or t.get("previewUrl")) and t.get("id") and t["id"] not in seen:
-                out.append(t); seen.add(t["id"])
-                if len(out) >= target_min: return out
-        time.sleep(0.05)  # tiny pacing between terms
-    for term in terms[:6]:
-        for t in collect_from_playlists(term, max_playlists=2, max_tracks_per=150):
-            if (t.get("preview_url") or t.get("previewUrl")) and t.get("id") and t["id"] not in seen:
-                out.append(t); seen.add(t["id"])
-                if len(out) >= target_min: return out
-    return out
+        score = 0.75*sims + 0.15*pop + 0.05*gbonus + 0.05*fbonus
+        order = np.argsort(-score)[:limit]
+        return [tracks[i] for i in order.tolist()]
+    except Exception as e:
+        print(f"[warn] SBERT rerank failed: {e}")
+        return sorted(tracks, key=lambda x: (x.get("popularity") or 0), reverse=True)[:limit]
 
 # =========================== Core Recommend ===========================
-from typing import List
-
-from typing import List
-import re
-
-def recommend_from_text(text: str, limit: int, *, allow_heuristic: bool, strict_genre: bool, local_audio: bool, allow_covers: bool) -> List[dict]:
-
-    # Define strict sad mood constraints (example)
-    constraints = {
-        "valence": (0.0, 0.2),       # very sad
-        "energy": (0.0, 0.4),        # low energy
-        "acousticness": (0.6, 1.0),  # mostly acoustic
-        "tempo": (50, 90)            # slow tempo
-    }
-
+def recommend_from_text(text: str, limit: int, *, strict_genre: bool, sbert_model_name: str) -> List[dict]:
+    # Parse prompt into mood words + genre tokens (when present)
     moods, genres = parse_query(text)
-    if not genres or strict_genre:
-        # Force genre to pop for "happy pop" or ambiguous queries
-        genres = ["pop"]
+    if not genres:
+        for g in ["pop","indie-pop","dance","rock","edm","hip-hop"]:
+            if g in ALLOWED_GENRES:
+                genres = [g]; break
+        if not genres: genres = ["pop"]
 
-    # Search candidates strictly by genre
-    candidates = []
-    for genre in genres:
-        candidates.extend(search_tracks_by_genres([genre]))
+    # Build candidate pool
+    candidates = search_tracks_by_genres(genres, limit_per_genre=160)
+    for g in genres[:2]:
+        candidates.extend(collect_from_playlists(g, max_playlists=3, max_tracks_per=150))
+    for g in genres[:2]:
+        candidates.extend(search_tracks_by_term(g, pages=1, market=DEFAULT_MARKET))
 
-
-    # Also collect from playlists strictly matching genres
-    for genre in genres[:2]:
-        candidates.extend(collect_from_playlists(genre, max_playlists=3, max_tracks_per=200))
-
-    # Deduplicate
-    seen = set()
-    uniq_candidates = []
+    # Dedup & cap
+    seen = set(); uniq_candidates = []
     for t in candidates:
         tid = t.get("id")
         if tid and tid not in seen:
-            # Ensure track genres include the requested genre (strict filtering)
-            track_genres = t.get("genres", []) or []
-            # Sometimes genre info is not present in track, so fallback to artist genres:
-            if not track_genres:
-                artists = t.get("artists", [])
-                for artist in artists:
-                    artist_genres = artist.get("genres", [])
-                    track_genres.extend(artist_genres)
+            uniq_candidates.append(t); seen.add(tid)
+    if len(uniq_candidates) > MAX_CANDIDATES:
+        uniq_candidates = uniq_candidates[:MAX_CANDIDATES]
 
-            # Lowercase genres for matching
-            track_genres_lower = [g.lower() for g in track_genres]
+    # Strict genre (by artist genres)
+    if strict_genre and genres:
+        gtokens = genres[:]
+        filtered = []
+        seen_ids = set()
+        for t in uniq_candidates:
+            arts = t.get("artists") or []
+            if any(artist_matches_any_genre(a.get("id"), gtokens) for a in arts):
+                tid = t.get("id")
+                if tid and tid not in seen_ids:
+                    filtered.append(t); seen_ids.add(tid)
+        if filtered:
+            uniq_candidates = filtered
 
-            if strict_genre:
-                if not any(genre.lower() in g for g in track_genres_lower):
-                    continue  # skip tracks not matching genre strictly
-
-            uniq_candidates.append(t)
-            seen.add(tid)
-
+    print(f"[debug] candidates={len(candidates)}, unique={len(uniq_candidates)}")
     if not uniq_candidates:
-        print("No candidates found for genres:", genres)
         return []
 
-    # Check audio features availability
-    if not audio_features_available():
-        if not allow_heuristic:
-            print("Audio features endpoint is not available, and heuristic filtering not allowed.")
-            return []
-        else:
-            print("Audio features endpoint is not available, using heuristic filtering.")
+    # Optional features (for tags only)
+    feat_map: Dict[str, dict] = {}
+    if audio_features_available():
+        ids = [t["id"] for t in uniq_candidates]
+        feat_map = get_audio_features(ids)
 
-            # Heuristic filtering: filter by track name & artist name to weed out foreign language or weird tracks
-            def is_relevant_track(track):
-                # Example heuristic: English letters in name and artist (basic)
-                def is_english(s):
-                    return bool(re.search(r'[a-zA-Z]', s))
-                return is_english(track.get("name", "")) and any(is_english(a.get("name", "")) for a in track.get("artists", []))
+    # SBERT rerank
+    reranked = sbert_rerank(text, uniq_candidates, feat_map, genres, moods, limit=max(limit*2, 30), model_name=sbert_model_name)
+    return format_tracks(reranked[:limit])
 
-            filtered = [t for t in uniq_candidates if is_relevant_track(t)]
-
-            filtered = filtered[:limit]
-
-            return format_tracks(filtered)
-
-    # Get audio features and filter strictly on mood
-    ids = [t["id"] for t in uniq_candidates]
-    feat_map = get_audio_features(ids)
-
-    filtered = []
-    for t in uniq_candidates:
-        af = feat_map.get(t["id"])
-        if af and matches(af, constraints):
-            filtered.append(t)
-            if len(filtered) >= limit:
-                break
-
-    if not filtered:
-        print("No tracks matched the strict mood constraints.")
-        return []
-
-    # Format output
-    return format_tracks(filtered)
-
-
+# =========================== Formatting & CLI ===========================
 def format_tracks(tracks: List[dict]) -> List[dict]:
     out = []
     for t in tracks:
@@ -632,33 +458,27 @@ def format_tracks(tracks: List[dict]) -> List[dict]:
         })
     return out
 
-
-
-# =========================== CLI ===========================
 def main():
-    parser = argparse.ArgumentParser(description="Aurafy music recommender")
-
-    parser.add_argument("query", type=str, help="Search query (e.g. 'sad disney')")
-    parser.add_argument("--limit", type=int, default=10, help="Number of tracks to return")
-    parser.add_argument("--strict-genre", action="store_true", help="Enable strict genre filtering")
-    parser.add_argument("--allow-covers", action="store_true", help="Include cover-heavy tracks")
-    parser.add_argument("--allow-heuristic", action="store_true", help="Allow heuristic matching")
-    parser.add_argument("--local-audio", action="store_true", help="Analyze audio locally")
-
+    parser = argparse.ArgumentParser(description="Aurafy (Spotify + SBERT reranker)")
+    parser.add_argument("text", nargs="*", help="Anything: 'rainy late night nostalgic drive', 'sad disney', 'happy pop' ...")
+    parser.add_argument("--limit", type=int, default=12, help="Number of tracks to return")
+    parser.add_argument("--strict-genre", action="store_true", help="Require artist genres to include input genre tokens")
+    parser.add_argument("--sbert-model", type=str, default=None, help="sentence-transformers model name (overrides env)")
     args = parser.parse_args()
 
-    tracks = recommend_from_text(
-        text=args.query,
-        limit=args.limit,
-        allow_heuristic=args.allow_heuristic,
-        strict_genre=args.strict_genre,
-        local_audio=args.local_audio,
-        allow_covers=args.allow_covers,
-    )
+    model_name = args.sbert_model or SBERT_MODEL_NAME_ENV_DEFAULT
+    query = " ".join(args.text).strip() or "happy pop"
 
+    tracks = recommend_from_text(query, limit=args.limit, strict_genre=args.strict_genre, sbert_model_name=model_name)
+
+    print("\nMood2Music · Preview")
+    print("Input:", query)
     print("Top Tracks:")
-    for i, track in enumerate(tracks, 1):
-        print(f"{i}. {track.get('artist')} — {track.get('name')}")
+    for i, t in enumerate(tracks, 1):
+        line = f"{i:2d}. {t['artist']} — {t['name']}"
+        if t.get("previewUrl"):
+            line += f"  [preview: {t['previewUrl']}]"
+        print(line)
 
 if __name__ == "__main__":
     main()
