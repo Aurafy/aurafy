@@ -347,41 +347,59 @@ def build_track_text(t: dict, feat: Optional[dict], target_genres: List[str], mo
         ("tags: " + ", ".join(tags)) if tags else ""
     ]))
 
-def sbert_rerank(query: str, tracks: List[dict], feat_map: Dict[str, dict], target_genres: List[str], mood_words: List[str], limit: int, model_name: str) -> List[dict]:
+def sbert_rerank(query: str, tracks: list, feat_map: dict, target_genres: list, mood_words: list, limit: int, model_name: str):
     model = get_sbert_model(model_name)
     if model is None:
-        # Fallback: popularity sort
         return sorted(tracks, key=lambda x: (x.get("popularity") or 0), reverse=True)[:limit]
 
-    # Corpus strings
-    corpus_texts = [build_track_text(t, feat_map.get(t.get("id")), target_genres, mood_words) for t in tracks]
-    try:
-        import numpy as np
-        q_emb = model.encode([query], normalize_embeddings=True)
-        c_emb = model.encode(corpus_texts, normalize_embeddings=True, batch_size=64, convert_to_numpy=True)
-        sims = (c_emb @ q_emb[0])  # cosine since normalized
+    # Build human-readable audio feature text (no hardcoded moods)
+    def describe_features(af):
+        if not af:
+            return ""
+        parts = []
+        if af.get("valence") is not None:
+            parts.append(f"valence {af['valence']:.2f}")
+        if af.get("energy") is not None:
+            parts.append(f"energy {af['energy']:.2f}")
+        if af.get("danceability") is not None:
+            parts.append(f"danceability {af['danceability']:.2f}")
+        if af.get("tempo") is not None:
+            parts.append(f"tempo {af['tempo']:.0f} BPM")
+        return ", ".join(parts)
 
-        # Small popularity + genre + feature bonuses
-        pop = np.array([float(t.get("popularity") or 0)/100.0 for t in tracks])
+    # Combine track info + audio features into corpus
+    corpus_texts = []
+    for t in tracks:
+        desc = build_track_text(t, feat_map.get(t.get("id")), target_genres, mood_words)
+        feat_desc = describe_features(feat_map.get(t.get("id")))
+        if feat_desc:
+            desc += " | " + feat_desc
+        corpus_texts.append(desc)
+
+    try:
+        # Encode track descriptions
+        track_embs = model.encode(corpus_texts, normalize_embeddings=True, batch_size=64)
+
+        # Encode each mood word separately
+        mood_embs = model.encode(mood_words, normalize_embeddings=True)
+
+        # Compute cosine similarity for each mood word, then average
+        sims_per_word = [util.cos_sim(m_emb, track_embs).cpu().numpy()[0] for m_emb in mood_embs]
+        sims_avg = np.mean(sims_per_word, axis=0)
+
+        # Popularity + genre bonuses
+        pop = np.array([float(t.get("popularity") or 0) / 100.0 for t in tracks])
         gbonus = np.array([
-            0.10 if any(artist_matches_any_genre(a.get("id"), target_genres) for a in (t.get("artists") or [])) else 0.0
+            0.1 if any(artist_matches_any_genre(a.get("id"), target_genres) for a in (t.get("artists") or [])) else 0.0
             for t in tracks
         ])
-        fbonus = []
-        for t in tracks:
-            af = feat_map.get(t.get("id")) or {}
-            v = af.get("valence"); e = af.get("energy"); d = af.get("danceability")
-            bonus = 0.0
-            if "happy" in mood_words and v is not None and e is not None and v >= 0.65 and e >= 0.6: bonus += 0.12
-            if "sad" in mood_words and v is not None and v <= 0.3: bonus += 0.12
-            if "chill" in mood_words and e is not None and e <= 0.45: bonus += 0.10
-            if "hype" in mood_words and d is not None and e is not None and d >= 0.7 and e >= 0.75: bonus += 0.12
-            fbonus.append(bonus)
-        fbonus = np.array(fbonus)
 
-        score = 0.75*sims + 0.15*pop + 0.05*gbonus + 0.05*fbonus
+        # Final score (mood is heavily weighted so list actually changes)
+        score = 0.7 * sims_avg + 0.2 * pop + 0.1 * gbonus
+
         order = np.argsort(-score)[:limit]
         return [tracks[i] for i in order.tolist()]
+
     except Exception as e:
         print(f"[warn] SBERT rerank failed: {e}")
         return sorted(tracks, key=lambda x: (x.get("popularity") or 0), reverse=True)[:limit]
