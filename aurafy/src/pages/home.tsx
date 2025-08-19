@@ -65,7 +65,7 @@ export default function Home() {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Try: white girl pop, jazzy cafe, late night rave"
+          placeholder="Try: airport jams, jazzy cafe"
           className="border p-2 rounded w-full"
           onKeyDown={(e) => e.key === "Enter" && searchSongs()}
         />
@@ -79,7 +79,7 @@ export default function Home() {
       </div>
 
       {/* Sliders */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6 rounded-lg border p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-2 gap-4 mb-6 rounded-lg border p-4">
         <div>
           <div className="flex items-center justify-between">
             <label className="font-medium">Result limit</label>
@@ -113,70 +113,59 @@ export default function Home() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>
-      )}
-      {!error && loading && (
-        <div className="mb-4 text-sm text-gray-600">Crunching embeddings & fetching tunes…</div>
-      )}
-      {displayed.length > 0 && (
-        <div className="text-xs text-gray-600 mb-3">
-          Showing {displayed.length} of {limit} (filtered from {results.length}).
+        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
         </div>
       )}
+      {!error && loading && (
+        <div className="mb-4 text-sm text-gray-600">
+          Crunching embeddings & fetching tunes…
+        </div>
+      )}
+      {displayed.length > 0}
 
-      <div role="list" className="rounded-lg border divide-y">
+      {/* GRID LIST */}
+     {/* RESULTS: horizontal rows, Spotify-style */}
+<div className="mt-6 space-y-3 w-fit mx-auto self-center">
   {displayed.map((t) => (
     <div
-      role="listitem"
       key={t.id}
-      className="flex items-center px-3 py-2 hover:bg-gray-50"
+      className="p-3 border rounded-lg hover:bg-gray-50 flex items-center gap-4"
+      style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: "1rem" }}
     >
-      {/* Album Cover */}
+      {/* album art */}
       <a
         href={`https://open.spotify.com/track/${t.id}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="shrink-0 mr-4"
-        title="Open in Spotify"
+        className="shrink-0"
       >
         <img
           src={t.albumArt || ""}
           alt={t.album || t.name}
-          style={{
-            width: 64,
-            height: 64,
-            objectFit: "cover",
-            borderRadius: 6,
-            display: "block",
-          }}
-          onError={(e: any) => {
-            e.currentTarget.style.visibility = "hidden";
-            e.currentTarget.style.width = "0px";
-          }}
+          className="block rounded object-cover"
+          style={{ width: 100, height: 100 }}
         />
       </a>
 
-      {/* Track Info & Link */}
-      <div className="flex flex-1 items-center justify-between min-w-0">
-        <div className="min-w-0 truncate">
-          <span className="font-medium truncate">{t.name}</span>
-          <span className="text-gray-500"> &nbsp;by&nbsp; </span>
-          <span className="text-gray-800 truncate">{t.artist}</span>
-        </div>
-
-        <a
-          href={`https://open.spotify.com/track/${t.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 text-blue-600 hover:underline text-sm ml-4"
-        >
-          Open ↗
-        </a>
+      {/* song + artist inline */}
+      <div className="text-lg font-bold truncate" style={{ marginLeft: "auto", fontSize: "25px" }}>
+        {t.name} <span className="font-normal text-gray-600">by {t.artist}</span>
       </div>
+
+      {/* link on far right */}
+      <a
+        href={`https://open.spotify.com/track/${t.id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="whitespace-nowrap text-sm text-blue-600 hover:underline whitespace-nowrap"
+        style={{ marginLeft: "auto", fontSize: "25px"}}
+      >
+        Open ↗
+      </a>
     </div>
   ))}
 </div>
-
 
       {!loading && !error && displayed.length === 0 && (
         <p className="mt-4 text-sm text-gray-500">
