@@ -124,52 +124,59 @@ export default function Home() {
         </div>
       )}
 
-      {/* --- Compact Spotify-like rows (no bullets) --- */}
       <div role="list" className="rounded-lg border divide-y">
-        {displayed.map((t) => (
-          <div
-            role="listitem"
-            key={t.id}
-            className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50"
-          >
-            {/* Bigger cover (64px), tight to text */}
-            <a
-              href={`https://open.spotify.com/track/${t.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0"
-              title="Open in Spotify"
-            >
-              <img
-                src={t.albumArt || ""}
-                alt={t.album || t.name}
-                style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, display: "block" }}
-                onError={(e: any) => {
-                  e.currentTarget.style.visibility = "hidden";
-                  e.currentTarget.style.width = "0px";
-                }}
-              />
-            </a>
+  {displayed.map((t) => (
+    <div
+      role="listitem"
+      key={t.id}
+      className="flex items-center px-3 py-2 hover:bg-gray-50"
+    >
+      {/* Album Cover */}
+      <a
+        href={`https://open.spotify.com/track/${t.id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="shrink-0 mr-4"
+        title="Open in Spotify"
+      >
+        <img
+          src={t.albumArt || ""}
+          alt={t.album || t.name}
+          style={{
+            width: 64,
+            height: 64,
+            objectFit: "cover",
+            borderRadius: 6,
+            display: "block",
+          }}
+          onError={(e: any) => {
+            e.currentTarget.style.visibility = "hidden";
+            e.currentTarget.style.width = "0px";
+          }}
+        />
+      </a>
 
-            {/* Title · Artist (single line, truncates) */}
-            <div className="min-w-0 flex-1 whitespace-nowrap overflow-hidden text-ellipsis">
-              <span className="font-medium">{t.name}</span>
-              <span className="text-gray-500"> &nbsp;by&nbsp; </span>
-              <span className="text-gray-800">{t.artist}</span>
-            </div>
+      {/* Track Info & Link */}
+      <div className="flex flex-1 items-center justify-between min-w-0">
+        <div className="min-w-0 truncate">
+          <span className="font-medium truncate">{t.name}</span>
+          <span className="text-gray-500"> &nbsp;by&nbsp; </span>
+          <span className="text-gray-800 truncate">{t.artist}</span>
+        </div>
 
-            {/* Open link */}
-            <a
-              href={`https://open.spotify.com/track/${t.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0 text-blue-600 hover:underline text-sm"
-            >
-              Open ↗
-            </a>
-          </div>
-        ))}
+        <a
+          href={`https://open.spotify.com/track/${t.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 text-blue-600 hover:underline text-sm ml-4"
+        >
+          Open ↗
+        </a>
       </div>
+    </div>
+  ))}
+</div>
+
 
       {!loading && !error && displayed.length === 0 && (
         <p className="mt-4 text-sm text-gray-500">
