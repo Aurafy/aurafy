@@ -889,6 +889,25 @@ def format_tracks(tracks: List[dict]) -> List[dict]:
         })
     return out
 
+def recommend(text: str, limit: int = 12):
+    """Return track recommendations for the Flask API."""
+    model_name = SBERT_MODEL_NAME_ENV_DEFAULT
+    query = text.strip() or "happy pop"
+
+    tracks = recommend_from_text(
+        query,
+        limit=limit,
+        strict_genre=False,  # defaults, or expose more params later
+        sbert_model_name=model_name,
+        unique_artists=False,
+        anchor_ratio=ANCHOR_RATIO_DEFAULT,
+        anchor_pop_threshold=ANCHOR_POP_THRESHOLD,
+        min_popularity=0,
+    )
+
+    return tracks
+
+
 def main():
     parser = argparse.ArgumentParser(description="Aurafy (Spotify + SBERT reranker)")
     parser.add_argument("text", nargs="*", help="Anything: 'rainy late night nostalgic drive', 'sad disney', 'happy pop' ...")

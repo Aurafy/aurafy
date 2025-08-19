@@ -1,0 +1,1 @@
+{"playlists": {"href": "https://api.spotify.com/v1/search?offset=0&limit=5&query=happy%20pop&type=playlist", "limit": 5, "next": "https://api.spotify.com/v1/search?offset=5&limit=5&query=happy%20pop&type=playlist", "offset": 0, "previous": null, "total": 902, "items": [null, null, null, null, null]}}
