@@ -22,9 +22,25 @@ a:hover {
   color: #535bf2;
 }
 
+input,
+button,
+select,
+textarea {
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+input:focus,
+button:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+
 body {
   margin: 0;
-  background: radial-gradient(circle at top left, rgb(253, 246, 229) 0%, rgb(241, 105, 162) 20%, rgba(96, 56, 164, 0.8) 40%, rgb(12, 12, 90) 100%);
+  background: radial-gradient(circle at top left, rgb(253, 246, 229) 0%, rgb(241, 105, 180) 20%, rgba(164, 56, 99, 0.8) 40%, rgb(90, 12, 42) 100%);
   background-attachment: fixed;
   background-size: cover;
   display: block;
