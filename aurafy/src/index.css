@@ -24,9 +24,15 @@ a:hover {
 
 body {
   margin: 0;
+  background: radial-gradient(circle at top left, rgb(253, 246, 229) 0%, rgb(241, 105, 162) 20%, rgba(96, 56, 164, 0.8) 40%, rgb(12, 12, 90) 100%);
+  background-attachment: fixed;
+  background-size: cover;
   display: block;
   min-width: 320px;
-  min-height: 100vh;
+}
+
+html, body, #root {
+    min-height: 100%;
 }
 
 h1 {

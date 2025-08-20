@@ -54,22 +54,19 @@ export default function Home() {
 
   return (
     <div
-      className="min-h-screen p-6 max-w-4xl mx-auto text-left text-white"
+      className="p-6 max-w-4xl mx-auto text-left text-white"
       style={{
-        background: "center-gradient(135deg, #db70cbff 0%, #d903c4ff 55%, #f8acf0ff 100%)",
-        backgroundAttachment: "fixed",
-        backgroundSize: "cover",
+        fontFamily: "'Baloo 2', cursive",
         backdropFilter: "blur(3px)",
-        boxShadow: "inset 0 0 100px rgba(153, 11, 11, 0.93)",
+        color: "white"
       }}
     >
       <h1
         className="text-4xl font-extrabold mb-2"
-        style={{ textShadow: "1px 1px 4px rgba(0,0,0,0.4)" }}
       >
         Aurafy
       </h1>
-      <p className="text-sm mb-4" style={{ textShadow: "0 0 8px rgba(0,0,0,0.15)" }}>
+      <p className="text-sm mb-4">
         Type a vibe and tune the sliders. We’ll fetch and rank tracks from your backend.
       </p>
 
@@ -80,7 +77,7 @@ export default function Home() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Try: airport jams, jazzy cafe"
-          className="border p-2 rounded w-full text-black"
+          className="border p-2 rounded w-full text-white"
           onKeyDown={(e) => e.key === "Enter" && searchSongs()}
         />
         <button
@@ -101,16 +98,12 @@ export default function Home() {
           alignItems: "center",
           gap: "1rem",
           marginLeft: "auto",
-          backgroundColor: "rgba(255, 255, 255, 0.1)",
-          backdropFilter: "blur(8px)",
-          border: "1px solid rgba(255, 255, 255, 0.2)",
-          boxShadow: "0 0 15px rgba(255, 182, 193, 0.4)",
         }}
       >
         {/* Result Limit Slider */}
         <div className="flex-1 min-w-[250px]" style={{ marginLeft: "auto" }}>
           <div className="flex items-center justify-between mb-1">
-            <label className="font-medium">Result limit</label>
+            <label className="font-medium">Result limit: </label>
             <span className="text-sm">{limit}</span>
           </div>
           <input
@@ -127,7 +120,7 @@ export default function Home() {
         {/* Min popularity slider */}
         <div className="flex-1 min-w-[250px]" style={{ marginRight: "auto" }}>
           <div className="flex items-center justify-between mb-1">
-            <label className="font-medium">Min track popularity</label>
+            <label className="font-medium">Min track popularity: </label>
             <span className="text-sm">{minPopularity}</span>
           </div>
           <input
@@ -187,10 +180,10 @@ export default function Home() {
             {/* song + artist inline */}
             <div
               className="text-lg font-bold truncate"
-              style={{ marginLeft: "auto", fontSize: "25px", color: "white", textShadow: "0 0 5px rgba(0,0,0,0.5)" }}
+              style={{ marginLeft: "auto", fontSize: "25px", color: "white" }}
             >
               {t.name}{" "}
-              <span className="font-normal text-gray-300" style={{ color: "#ffc1cc" }}>
+              <span className="font-normal text-gray-300" style={{ color: "#ffffff" }}>
                 by {t.artist}
               </span>
             </div>
