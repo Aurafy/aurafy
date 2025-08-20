@@ -67,7 +67,7 @@ export default function Home() {
         Aurafy
       </h1>
       <p className="text-sm mb-4">
-        Type a vibe and tune the sliders. We’ll fetch and rank tracks from your backend.
+       Welcome to Aurafy! Enter a mood, vibe, or theme to discover music that matches your feelings.
       </p>
 
       {/* Search row */}
@@ -142,7 +142,7 @@ export default function Home() {
       )}
       {!error && loading && (
         <div className="mb-4 text-sm" style={{ textShadow: "0 0 8px rgba(0,0,0,0.15)" }}>
-          Crunching embeddings & fetching tunes…
+         Fetching tunes…
         </div>
       )}
 
