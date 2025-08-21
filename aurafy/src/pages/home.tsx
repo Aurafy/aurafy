@@ -63,31 +63,70 @@ export default function Home() {
     >
       <h1
         className="text-4xl font-extrabold mb-2"
+        style = {{ fontSize: "60px", marginBottom: "1rem"}}
       >
-        Aurafy
+        ▶︎•၊၊||၊|။ Aurafy |||||။၊|။•
       </h1>
-      <p className="text-sm mb-4">
+      <p className="text-sm mb-4"
+      style = {{ fontSize: "30px", marginTop: "1rem"}}>
        Welcome to Aurafy! Enter a mood, vibe, or theme to discover music that matches your feelings.
       </p>
 
       {/* Search row */}
-      <div className="flex gap-2 mb-4">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Try: airport jams, jazzy cafe"
-          className="border p-2 rounded w-full text-white"
-          onKeyDown={(e) => e.key === "Enter" && searchSongs()}
-        />
-        <button
-          onClick={searchSongs}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-          disabled={loading || !query.trim()}
-        >
-          {loading ? "Searching…" : "Search"}
-        </button>
-      </div>
+<div style={{ display: "flex", gap: "12px", marginBottom: "24px", alignItems: "center", justifyContent: "center" }}>
+  <input
+    id = "searchInput"
+    type="text"
+    value={query}
+    onChange={(e) => setQuery(e.target.value)}
+    placeholder="airport jams, boardwalk ice cream, rainy late night drive, etc"
+    style={{
+      width: "50%",
+      padding: "12px 16px",
+      borderRadius: "500px",
+      background: "rgba(255,255,255,0.1)",
+      color: "white",
+      fontSize: "18px",
+      border: "none",
+      outline: "none",
+      boxShadow: "0 4px 10px rgba(97, 83, 83, 0.2)",
+    }}
+    onKeyDown={(e) => e.key === "Enter" && searchSongs()}
+  />
+  <style>
+  {`
+    #searchInput::placeholder {
+      color: white;
+      opacity: 0.8;
+    }
+  `}
+</style>
+  <button
+    onClick={searchSongs}
+    disabled={loading || !query.trim()}
+    style={{
+      padding: "12px 24px",
+      borderRadius: "16px",
+      background: "rgb(203, 67, 135)", // pink → purple
+      color: "white",
+      fontWeight: 600,
+      fontSize: "18px",
+      border: "none",
+      cursor: loading || !query.trim() ? "not-allowed" : "pointer",
+      boxShadow: "0 6px 14px rgba(0,0,0,0.25)",
+      transition: "all 0.2s ease-in-out",
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.transform = "scale(1.05)";
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.transform = "scale(1)";
+    }}
+  >
+    {loading ? "Searching…" : "Search"}
+  </button>
+</div>
+
 
       {/* sliders */}
       <div
@@ -98,13 +137,14 @@ export default function Home() {
           alignItems: "center",
           gap: "1rem",
           marginLeft: "auto",
+          marginBottom: "3rem"
         }}
       >
         {/* Result Limit Slider */}
-        <div className="flex-1 min-w-[250px]" style={{ marginLeft: "auto" }}>
-          <div className="flex items-center justify-between mb-1">
-            <label className="font-medium">Result limit: </label>
-            <span className="text-sm">{limit}</span>
+        <div className="flex-1 min-w-[250px]" style={{ marginLeft: "auto", marginRight: "7rem" }}>
+          <div className="flex items-center justify-between mb-1"  style = {{fontSize: "25px"}}>
+            <label className="font-medium" style={{}}># of Tracks: </label>
+            <span className="text-sm" style={{ fontWeight: "bold", color: "rgb(247, 240, 213)"}}>{limit}</span>
           </div>
           <input
             type="range"
@@ -119,9 +159,9 @@ export default function Home() {
 
         {/* Min popularity slider */}
         <div className="flex-1 min-w-[250px]" style={{ marginRight: "auto" }}>
-          <div className="flex items-center justify-between mb-1">
-            <label className="font-medium">Min track popularity: </label>
-            <span className="text-sm">{minPopularity}</span>
+          <div className="flex items-center justify-between mb-1" style = {{fontSize: "25px"}}>
+            <label className="font-medium">Track popularity / 100: </label>
+            <span className="text-sm" style={{ fontWeight: "bold", color: "rgb(247, 240, 213)"}}>{minPopularity}</span>
           </div>
           <input
             type="range"
@@ -194,9 +234,9 @@ export default function Home() {
               target="_blank"
               rel="noopener noreferrer"
               className="whitespace-nowrap text-sm text-pink-300 hover:underline"
-              style={{ marginLeft: "auto", fontSize: "25px" }}
+              style={{ marginLeft: "auto", marginRight: "1rem", fontSize: "20px", textDecoration: "underline" }}
             >
-              Open ↗
+              Open
             </a>
           </div>
         ))}

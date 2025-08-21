@@ -5,7 +5,6 @@
 
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -37,18 +36,28 @@ button:focus {
   box-shadow: none;
 }
 
-
-body {
-  margin: 0;
-  background: radial-gradient(circle at top left, rgb(253, 246, 229) 0%, rgb(241, 105, 180) 20%, rgba(164, 56, 99, 0.8) 40%, rgb(90, 12, 42) 100%);
-  background-attachment: fixed;
-  background-size: cover;
-  display: block;
-  min-width: 320px;
+html, body, #root {
+  height: 100%;
+  min-height: 100vh;
 }
 
-html, body, #root {
-    min-height: 100%;
+/* put the gradient background on html so it always fills screen */
+html {
+  background: radial-gradient(circle at top left,
+    rgb(253, 246, 229) 0%,
+    rgb(241, 105, 180) 20%,
+    rgba(164, 56, 99, 0.8) 40%,
+    rgb(90, 12, 42) 100%);
+  background-attachment: fixed;
+  background-size: cover;
+}
+
+/* make body and root transparent to let gradient show through */
+body, #root {
+  margin: 0;
+  background: transparent;
+  display: block;
+  min-width: 320px;
 }
 
 h1 {
@@ -78,7 +87,7 @@ button:focus-visible {
 @media (prefers-color-scheme: light) {
   :root {
     color: #213547;
-    background-color: #ffffff;
+    background-color: transparent; /* don’t override gradient with white */
   }
   a:hover {
     color: #747bff;
