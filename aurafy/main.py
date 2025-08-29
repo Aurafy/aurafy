@@ -32,7 +32,6 @@ import random
 import re
 from typing import Dict, List, Tuple, Optional, Set
 import numpy as np
-from sentence_transformers import util
 import hashlib
 import pathlib
 import threading
@@ -529,6 +528,7 @@ def sbert_rerank(
       - co: evidence (# of query-matched playlists containing the track)
       - gbonus/pop/jazz: tiny nudges
     """
+    from sentence_transformers import util
     freq_counts = freq_counts or {}
     title_boosts = title_boosts or {}
 
