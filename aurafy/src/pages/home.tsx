@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-
+import { API } from "../config";
 type Track = {
   id: string;
   name: string;
@@ -26,25 +26,28 @@ export default function Home() {
   }, [limit, minPopularity]);
 
   const searchSongs = async () => {
-    if (!query.trim()) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        text: query,
-        limit: String(requestLimit),
-        min_popularity: String(minPopularity),
-      });
-      const res = await fetch(`/api/recommend?${params.toString()}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as Track[];
-      setResults(Array.isArray(data) ? data : []);
-    } catch (e: any) {
-      setError(e?.message || "Something went wrong");
-    } finally {
-      setLoading(false);
-    }
-  };
+  if (!query.trim()) return;
+  setLoading(true);
+  setError(null);
+  try {
+    const params = new URLSearchParams({
+      text: query,
+      limit: String(requestLimit),
+      min_popularity: String(minPopularity),
+    });
+
+    // Use the API base (env-driven) instead of a relative /api path
+    const res = await fetch(`${API}/api/recommend?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = (await res.json()) as Track[];
+    setResults(Array.isArray(data) ? data : []);
+  } catch (e: any) {
+    setError(e?.message || "Something went wrong");
+  } finally {
+    setLoading(false);
+  }
+};
 
   const filtered = useMemo(
     () => results.filter((t) => (t.popularity ?? 0) >= minPopularity),
