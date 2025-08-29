@@ -18,4 +18,4 @@ sentence_transformers
 hashlib
 pathlib
 threading
-dotenv
+python-dotenv
