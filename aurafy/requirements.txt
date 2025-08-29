@@ -6,16 +6,3 @@ sentence-transformers
 python-dotenv
 gunicorn
 httpx
-os
-time
-base64
-argparse
-json
-random
-re
-typing
-sentence_transformers
-hashlib
-pathlib
-threading
-python-dotenv
