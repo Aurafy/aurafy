@@ -7,17 +7,18 @@ REQUIRED_ENV = [
     "SPOTIFY_CLIENT_SECRET"
 ]
 
+
+app = Flask(__name__, static_folder="dist", static_url_path="")
+
 def check_env():
     missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Missing env: {', '.join(missing)}")
+# Serve static files from Vite build directory (already committed to dist/)
 @app.errorhandler(Exception)
 def _err(e):
     app.logger.error("Unhandled error: %s\n%s", e, traceback.format_exc())
     return {"error": str(e)}, 500
-
-# Serve static files from Vite build directory (already committed to dist/)
-app = Flask(__name__, static_folder="dist", static_url_path="")
 
 # Health check (no heavy imports)
 @app.route("/healthz")
