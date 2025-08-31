@@ -9,6 +9,17 @@ app = Flask(__name__, static_folder="dist", static_url_path="")
 def healthz():
     return "ok", 200
 
+@app.route("/api/ping")
+def ping():
+    return "pong", 200
+
+import logging
+logging.basicConfig(level=logging.INFO)
+
+@app.before_request
+def _log_req():
+    app.logger.info(f"{request.method} {request.path} args={dict(request.args)}")
+
 # --- API route (lazy import of main) ---
 @app.route("/api/recommend")
 def recommend():

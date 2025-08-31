@@ -36,8 +36,15 @@ export default function Home() {
       min_popularity: String(minPopularity),
     });
 
+    const base = API || ""; // same-origin in prod
+    const url = `${base}/api/recommend?${params.toString()}`
+  .replace(/([^:]|^)\/\/+/g, "$1/"); // collapse accidental //
+
+// optional: console to verify in prod
+console.log("Calling:", url);
+
     // Use the API base (env-driven) instead of a relative /api path
-    const res = await fetch(`${API}/api/recommend?${params.toString()}`);
+    const res = await fetch(url, { method: "GET" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = (await res.json()) as Track[];
