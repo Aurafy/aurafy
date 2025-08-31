@@ -35,7 +35,7 @@ import numpy as np
 import hashlib
 import pathlib
 import threading
-
+from sentence_transformers import util
 import httpx
 from dotenv import load_dotenv
 
